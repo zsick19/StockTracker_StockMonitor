@@ -2,8 +2,8 @@ const mongoose = require('mongoose')
 
 const watchSchema = new mongoose.Schema(
     {
-        userId: { type: mongoose.Schema.Types.ObjectId },
-        plannedTradeId: { type: mongoose.Schema.Types.ObjectId },
+        userId: { type: String },
+        plannedTradeId: { type: String },
         pricePoints: [Number],
         purpose: Number,
         tradeStatus: Number
@@ -11,8 +11,7 @@ const watchSchema = new mongoose.Schema(
 
 const tickerWatchSchema = new mongoose.Schema({
     _id: { type: String, require: true },
-    watchInfo: [watchSchema],
-    tradeWatchLevel: { type: Boolean, default: false }
+    watchInfo: [watchSchema]
 })
 
 module.exports = mongoose.model('TickerWatch', tickerWatchSchema)
