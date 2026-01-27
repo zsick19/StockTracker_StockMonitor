@@ -10,7 +10,9 @@ const NotificationMsg = require('./models/NotificationMsg')
 
 
 const usersLoggedIn = []
-const tempTickersPerUser = {} //tickerSymbol:[userId1,userId2]
+const tempTickersPerUser = {} //{tickerSymbol:[userId1,userId2],tickerSymbol:[userId3,userId2]}
+const macroTickersDefaultToEveryUser = ['SPY', 'DIA']
+//const watchListTickersPerUser = {} //tickerSymbol:[userId]
 
 const rabbitQueueNames = {
     loggedInEnterExitPlanQueue: 'enterExitWatchListPrice',
@@ -20,7 +22,8 @@ const rabbitQueueNames = {
     userLoggingInQueueName: 'UserLoggedIn_Queue',
     singleGraphTickerQueue: 'SingleTicker_temporaryTradeQueue',
     removeTempTickerQueue: 'removeTempTicker',
-    enterExitTradeQueue: 'enterExitTradeQueue'
+    enterExitTradeQueue: 'enterExitTradeQueue',
+    loggedInWatchListQueue: 'loggedInWatchListQueue'
 }
 
 let rabbitConnection = undefined
@@ -37,84 +40,6 @@ socketToFront.on('connect', () =>
     socketConnection = true
     console.log('Stock Trade Monitor Connected to Frontend Socket')
     socketToFront.emit('monitorServerConnected', { connectionId: 'Stock Trade Monitor Server' })
-
-    // socketToFront.on('removeTempTradeStream', (msg) =>
-    // {
-    //     try
-    //     {
-    //         const { userId, source } = msg.data
-    //         if (!userId || !source) return console.log('Missing information to remove trade stream')
-    //         // console.log(`Received Request to remove ${source} from stream.`)
-    //         // console.log(tempSourcesWithTickers[userId])
-
-    //         let tempTickersForUnsubscribeCheck = []
-    //         if (userId in tempSourcesWithTickers)
-    //         {
-    //             //userStreamToEnd should look like 'userId':[{source:'source1',tickers:['Symbol1','Symbol2','Symbol3']},{source:'source2',tickers:['Symbol1']}]
-    //             const userStreamToEnd = tempSourcesWithTickers[userId]
-
-
-    //             //remove userId and Source from tempStock object, if ticker array is empty, remove ticker and send ticker for unsubscribe check against DB
-    //             userStreamToEnd.map((sourceTickers, i) =>
-    //             {
-    //                 sourceTickers.tickers.map((ticker, j) =>
-    //                 {
-    //                     if (ticker in tempTradesDataStreams)
-    //                     {
-    //                         let foundFirstOccur = false
-    //                         tempTradesDataStreams[ticker] = tempTradesDataStreams[ticker].filter((t) =>
-    //                         {
-    //                             if (foundFirstOccur) return ticker
-    //                             if (t.userId !== userId) return ticker
-    //                             if (t.source !== source) return ticker
-
-    //                             if (!foundFirstOccur) { foundFirstOccur = true }
-    //                             // else { return ticker }
-    //                         })
-
-    //                         if (tempTradesDataStreams[ticker].length === 0)
-    //                         {
-    //                             tempTickersForUnsubscribeCheck.push(ticker)
-    //                             delete tempTradesDataStreams[ticker]
-    //                         }
-    //                     }
-    //                 })
-    //             })
-
-    //             //from tempSourceWTickers, remove source and ticker object
-    //             let foundFirstOccur = false
-    //             tempSourcesWithTickers[userId] = userStreamToEnd.filter((t) =>
-    //             {
-    //                 if (foundFirstOccur) return t
-    //                 if (t.source !== source) return t
-    //                 if (!foundFirstOccur) { foundFirstOccur = true }
-    //                 // else { return t }
-    //             })
-    //             if (tempSourcesWithTickers[userId].length === 0) { delete tempSourcesWithTickers[userId] }
-    //         }
-    //         // console.log(tempSourcesWithTickers[userId])
-
-    //         if (tempTickersForUnsubscribeCheck.length > 0)
-    //         {
-    //             tempTickersForUnsubscribeCheck.map(async (ticker) =>
-    //             {
-    //                 try
-    //                 {
-    //                     const foundTickerWatch = await TickerWatch.findById(ticker)
-    //                     if (!foundTickerWatch) { alpacaStream.removeTickerFromAlpacaDataStream([ticker]) }
-    //                 } catch (error)
-    //                 {
-    //                     console.log('Could not check for Ticker Watch upon attempting to remove temp trade stream.')
-    //                 }
-    //             })
-    //         }
-
-    //     } catch (error)
-    //     {
-    //         console.log(error)
-    //         console.log('Error attempting to remove users stream from tempSource')
-    //     }
-    // })
 })
 
 //////////////////////////////////////////////////////////////////////////////////////
@@ -124,24 +49,16 @@ let mongooseConnection = false
 let alpacaStream = new DataStream({ apiKey: process.env.ALPACA_API_PAPER, secretKey: process.env.ALPACA_API_PAPER_SECRET, paper: true });
 alpacaStream.socket.onConnect(() =>
 {
-    if (mongooseConnection)
-    {
-        fetchInitialTickers()
-    }
-    else
-        connectDB()
+    if (mongooseConnection) { fetchInitialTickers() }
+    else connectDB()
     connectionEstablished = true
 });
+
 alpacaStream.socket.onDisconnect(() =>
 {
     console.log("Disconnected From Alpaca Data Stream");
     connectionEstablished = false
-
-    setTimeout(() =>
-    {
-        alpacaStream.socket.connect()
-    }, 5000);
-
+    setTimeout(() => { alpacaStream.socket.connect() }, 5000);
 })
 
 
@@ -157,20 +74,19 @@ mongoose.connection.once('open', () =>
     mongooseConnection = true
     fetchInitialTickers()
     startConnectionToRabbitMQ(alpacaStream)
-})
-async function fetchInitialTickers()
-{
-    try
+    async function fetchInitialTickers()
     {
-        const results = await TickerWatch.find({}, { _id: 1 })
-        let tradeTickersFromDB = results.map((watchInfo, i) => { return watchInfo._id })
-
-        if (alpacaStream && results.length > 0) { if (tradeTickersFromDB.length > 0) alpacaStream.addTickerToAlpacaDataStream(tradeTickersFromDB) }
-    } catch (error)
-    {
-        console.log(error)
+        try
+        {
+            const results = await TickerWatch.find({}, { _id: 1 })
+            let tradeTickersFromDB = results.map((watchInfo, i) => { return watchInfo._id })
+            if (alpacaStream && tradeTickersFromDB.length > 0) alpacaStream.addTickerToAlpacaDataStream(tradeTickersFromDB)
+        } catch (error)
+        {
+            console.log(error)
+        }
     }
-}
+})
 
 //////////////////////////////////////////////////////////////////////////////////////
 ///////      RabbitMQ connection and function calls upon message received       //////
@@ -188,9 +104,10 @@ async function startConnectionToRabbitMQ(tickerDataStream)
         await rabbitChannel.assertQueue(rabbitQueueNames.enterExitTradeQueue, { durable: true })
         await rabbitChannel.assertQueue(rabbitQueueNames.singleGraphTickerQueue, { durable: true })
         await rabbitChannel.assertQueue(rabbitQueueNames.removeTempTickerQueue, { durable: true })
-
+        await rabbitChannel.assertQueue(rabbitQueueNames.loggedInWatchListQueue, { durable: true })
         rabbitChannel.prefetch(1)
         console.log('Consumer connected to RabbitMQ. Waiting for message')
+
 
         //Adds userId to logged in users and sends their plan/active trade relays as Trade data comes in
         rabbitChannel.consume(rabbitQueueNames.userLoggingInQueueName, (msg) =>
@@ -198,11 +115,16 @@ async function startConnectionToRabbitMQ(tickerDataStream)
             if (msg)
             {
                 const content = JSON.parse(msg.content.toString());
-                console.log(`Message received to add User: ${content.data.userId} to the Logged In User For Plan and Active Trade Streams.`)
-                if (!usersLoggedIn.includes(content.data.userId)) usersLoggedIn.push(content.data.userId)
+                console.log(`Message received to add User: ${content.data.userId}.`)
+                if (!usersLoggedIn.includes(content.data.userId))
+                {
+                    usersLoggedIn.push(content.data.userId)
+                    console.log(`${content.data.userId} added to the local usersLoggedIn Array`)
+                }
                 rabbitChannel.ack(msg);
             }
         })
+
 
         //Listening for new or updated Planned Stocks
         rabbitChannel.consume(rabbitQueueNames.initiateTrackingQueueName, (msg) =>
@@ -226,6 +148,7 @@ async function startConnectionToRabbitMQ(tickerDataStream)
             }
         }, { noAck: false });
 
+
         //Active Trade Entering and Exiting 
         rabbitChannel.consume(rabbitQueueNames.enterExitTradeQueue, (msg) =>
         {
@@ -240,14 +163,17 @@ async function startConnectionToRabbitMQ(tickerDataStream)
             }
         }, { noAck: false })
 
+
+
         //Streaming Trade Relays for Temporary Tickers
         rabbitChannel.consume(rabbitQueueNames.singleGraphTickerQueue, (msg) =>
         {
             if (msg)
             {
                 const content = JSON.parse(msg.content.toString())
-                console.log(content.tickerSymbol)
-                initiateSingleTickerStream(content, tickerDataStream)
+                console.log(`Attempting to add ${content.data.tickerSymbol} to temp ticker stream via singleGraphTickerQueue.`)
+                try { initiateSingleTickerStream(content, tickerDataStream) }
+                catch (error) { console.error(`Error occurred trying to add ${content.data.tickerSymbol} to Temp Ticker stream via singleGraphTickerQueue`) }
                 rabbitChannel.ack(msg)
             }
         }, { noAck: false })
@@ -256,8 +182,8 @@ async function startConnectionToRabbitMQ(tickerDataStream)
             if (msg)
             {
                 const content = JSON.parse(msg.content.toString())
-                console.log(`Set to remove this ticker from stream, ${content?.userId} ${content?.ticker}`)
-                removeSingleTickerStream(content, tickerDataStream)
+                try { removeSingleTickerStream(content, tickerDataStream) }
+                catch (error) { console.log(`Error occurred trying attempting to remove ${content.tickerSymbol} from Temp Ticker stream via RemoveTempTickerQueue`) }
                 rabbitChannel.ack(msg)
             }
         }, { noAck: false })
@@ -340,7 +266,8 @@ async function removeUsersTickerWatch(updateMessage)
 
     const watchReplace = {
         _id: foundTicker._id,
-        watchInfo: foundTicker.watchInfo.filter((userWatchInfo, i) => { userWatchInfo.userId !== updateMessage.userId })
+        watchInfo: foundTicker.watchInfo.filter((userWatchInfo, i) =>
+        { userWatchInfo.userId !== updateMessage.userId })
     }
 
     if (watchReplace.watchInfo.length === 0)
@@ -352,7 +279,11 @@ async function removeUsersTickerWatch(updateMessage)
     {
         await TickerWatch.findByIdAndUpdate(updateMessage.Symbol, watchReplace)
     }
+    console.log(updateMessage)
 }
+
+
+
 
 //setting a plan to Active Trade such that it will send trade relays to the active trade listener instead of planned stock listener
 async function updateTickerWatchToTradeWithEnterPrice(updateMessage)
@@ -378,67 +309,46 @@ async function updateTickerWatchToTradeWithEnterPrice(updateMessage)
 
 
 
+
+
+
 //adds a temporary Ticker stream associated with the userId
 async function initiateSingleTickerStream(content, tickerDataStream)
 {
     const { tickerSymbol, userId } = content.data
     if (!tickerSymbol || !userId) return console.log('Missing fields upon single ticker stream initiate')
 
-    let addTickerToAlpacaStream = false
-
-    //check if userId is already in tempTickerPerUser
     if (tickerSymbol in tempTickersPerUser)
     {
-        //if userId is present, ensure the ticker isn't already present
-        let userFoundForThisTicker = false
-        tempTickersPerUser[tickerSymbol].forEach(user =>
-        {
-            if (userId === user)
-            {
-                userFoundForThisTicker = true
-                return
-            }
-        })
-
-        //if ticker is not in user's temp tickers, add ticker to user's array
-        if (!userFoundForThisTicker)
-        {
-            tempTickersPerUser[tickerSymbol].push(userId)
-            addTickerToAlpacaStream = true
-        }
+        if (!tempTickersPerUser[tickerSymbol].includes(userId)) { tempTickersPerUser[tickerSymbol].push(userId) }
     } else
     {
-        //if user is not in tempTickersPerUser at all, add userId and ticker to user's array
         tempTickersPerUser[tickerSymbol] = [userId]
-        addTickerToAlpacaStream = true
+        tickerDataStream.addTickerToAlpacaDataStream([tickerSymbol])
     }
-
-    if (addTickerToAlpacaStream) { tickerDataStream.addTickerToAlpacaDataStream([tickerSymbol]) }
 }
 async function removeSingleTickerStream(content, tickerDataStream)
 {
-    let { ticker, userId } = content
-    if (!ticker || !userId) return console.log('Missing required information from remove single ticker stream')
+    let { tickerSymbol, userId } = content
+    if (!tickerSymbol || !userId) return console.log('Missing required information from remove single ticker stream')
 
-    const foundTickerWatch = await TickerWatch.findById(ticker)
-
+    const foundTickerWatch = await TickerWatch.findById(tickerSymbol)
     if (foundTickerWatch)
     {
-        let userIsTrackingTicker = false
-        foundTickerWatch.watchInfo.forEach((t) =>
-        {
-            if (t.userId.toString() === userId)
-            {
-                userIsTrackingTicker = true
-                return
-            }
-        })
-
-        if (userIsTrackingTicker) { tempTickersPerUser[ticker] = tempTickersPerUser[ticker].filter(t => t !== userId) }
+        foundTickerWatch.watchInfo.forEach((singleUserWatchInfo) => { if (singleUserWatchInfo.userId.toString() === userId) { filterUserIdFromTempTickerAndCheckForLength(); return } })
     } else
     {
-        tempTickersPerUser[ticker] = tempTickersPerUser[ticker].filter(t => t !== userId)
-        tickerDataStream.removeTickerFromAlpacaDataStream([ticker])
+        filterUserIdFromTempTickerAndCheckForLength()
+        tickerDataStream.removeTickerFromAlpacaDataStream([tickerSymbol])
+    }
+
+    function filterUserIdFromTempTickerAndCheckForLength()
+    {
+        if (tickerSymbol in tempTickersPerUser)
+        {
+            tempTickersPerUser[tickerSymbol] = tempTickersPerUser[tickerSymbol].filter(t => t !== userId)
+            if (tempTickersPerUser[tickerSymbol].length === 0) delete tempTickersPerUser[tickerSymbol]
+        }
     }
 }
 
@@ -458,88 +368,49 @@ async function removeSingleTickerStream(content, tickerDataStream)
 //////////////////////////////////////////////////////////////////////////////////////
 alpacaStream.socket.onStockTrade((trade) =>
 {
-    checkTradeForBufferChangeAndStreamIfLoggedIn(trade)
+    checkIfDefaultMacroTrade(trade)
+    checkIfUserIsLoggedInForTradeStream(trade)
     relayTradeToAnyTempUserTicker(trade)
 })
 
-async function checkTradeForBufferChangeAndStreamIfLoggedIn(trade)
+
+async function checkIfDefaultMacroTrade(trade)
+{
+    if (macroTickersDefaultToEveryUser.includes(trade.Symbol) && socketConnection) socketToFront.emit('macroTradeUpdate', { users: usersLoggedIn, trade })
+}
+async function checkIfUserIsLoggedInForTradeStream(trade)
 {
     try
     {
-        let statusChange = false
         const foundSymbol = await TickerWatch.findById(trade.Symbol)
         if (!foundSymbol) return
 
-        let priceHitCompare = foundSymbol.watchInfo.map((singleWatch, i) =>
+        foundSymbol.watchInfo.forEach((singleWatch) =>
         {
-            checkForLoggedInUser(singleWatch, trade)
+            if (!usersLoggedIn.includes(singleWatch.userId)) return
+            switch (singleWatch.purpose)
+            {
+                case -1: sendUserWatchListTradeRelayMessage(); break;//Only watchlist
+                case 0: sendUserPlanTradeRelayMessage(singleWatch, trade); break; //PlannedStock
+                case 1: sendUserActiveTradeRelayMessage(singleWatch, trade); break; //ActiveTradeStock
+            }
 
-            let insertionPoint = getInsertionIndexLinear(singleWatch.pricePoints, trade.Price)
-            if (singleWatch.tradeStatus < 0 && insertionPoint < 3 && insertionPoint !== Math.abs(singleWatch.tradeStatus))
-            {
-                statusChange = true
-                singleWatch.tradeStatus = (insertionPoint * -1)
-                if (singleWatch.tradeStatus > -3)
-                {
-                    watchLevel = true
-                    if (trade.bar)
-                    {
-                        alpacaStream.addTickerToAlpacaDataStream([trade.Symbol])
-                        alpacaStream.removeTickerFromMinuteDataStream([trade.Symbol])
-                    }
-                }
-                //sendBufferHitMessage(singleWatch, trade)
-            }
-            else if (singleWatch.tradeStatus > 0)
-            {
-                if (insertionPoint !== singleWatch.tradeStatus)
-                {
-                    statusChange = true
-                    singleWatch.tradeStatus = insertionPoint
-                    watchLevel = true
-                    //sendBufferHitMessage(singleWatch, trade)
-                }
-            }
-            return singleWatch
+            //check price against any price below/price above and send those messages out if user is logged in
+
+
         })
-
-        if (statusChange)
-        {
-            let replacementWatch = { _id: foundSymbol.Symbol, watchInfo: priceHitCompare }
-            await TickerWatch.findOneAndReplace({ _id: trade.Symbol }, replacementWatch)
-            console.log('Buffer Price Hit and updated in DB')
-        }
 
     } catch (error)
     {
         console.log(`Error checking trade ${trade.Symbol} against DB and for logged in users.`)
     }
 
-    function getInsertionIndexLinear(arr, num)
-    {
-        for (let i = 0; i < arr.length; i++)
-        {
-            if (arr[i] >= num) { return i; }
-        }
-        return arr.length;
-    }
-
-    function checkForLoggedInUser(singleWatch, trade)
-    {
-        if (!usersLoggedIn.includes(singleWatch.userId)) return
-
-        switch (singleWatch.purpose)
-        {
-            case 0: sendUserPlanTradeRelayMessage(singleWatch, trade); break;
-            case 1: sendUserActiveTradeRelayMessage(singleWatch, trade); break;
-        }
-    }
 }
 async function relayTradeToAnyTempUserTicker(trade)
 {
     try
     {
-        if (socketConnection && tempTickersPerUser[trade.Symbol].length > 0)
+        if (socketConnection && trade.Symbol in tempTickersPerUser && tempTickersPerUser[trade.Symbol].length > 0)
         {
             socketToFront.emit('tradeStream', { users: tempTickersPerUser[trade.Symbol], trade })
         }
@@ -568,22 +439,15 @@ async function sendUserPlanTradeRelayMessage(singleWatch, trade)
         plannedId: singleWatch.plannedTradeId,
         pricePoints: singleWatch.pricePoints,
         tradePrice: trade.Price,
+        includedInUserWatchList: singleWatch.watchListIncluded
     }
 
     try
     {
-        if (rabbitConnection && rabbitChannel)
-        {
-            await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
-            console.log(`Trade Stream Producer sent enter/exit plan price update for user ${singleWatch.userId}.`)
-        } else
-        {
-            rabbitConnection = await amqp.connect('amqp://localhost')
-            rabbitChannel = await connection.createChannel();
-            await rabbitChannel.assertQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, { durable: true }); // Durable queue survives broker restarts
-            rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false });// Persistent messages survive broker restarts
-            console.log(`Trade Stream Producer sent enter/exit plan price update for user ${singleWatch.userId}.`)
-        }
+        await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
+
+        // console.log(`Trade Stream Producer sent enter/exit plan trade update for user ${singleWatch.userId}.`)
+
     } catch (error)
     {
         console.error(`Trade Stream Producer failed to send enter/exit plan price update for ticker ${trade.Symbol} and user: ${singleWatch.userId}.`, error);
@@ -597,22 +461,33 @@ async function sendUserActiveTradeRelayMessage(singleWatch, trade)
         plannedId: singleWatch.plannedTradeId,
         pricePoints: singleWatch.pricePoints,
         tradePrice: trade.Price,
+        includedInUserWatchList: singleWatch.watchListIncluded
     }
 
     try
     {
-        if (rabbitConnection && rabbitChannel)
-        {
-            await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInActiveTradeQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
-            console.log(`Trade Stream Producer sent active trade price update for user ${singleWatch.userId}.`)
-        } else
-        {
-            rabbitConnection = await amqp.connect('amqp://localhost')
-            rabbitChannel = await connection.createChannel();
-            await rabbitChannel.assertQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, { durable: true }); // Durable queue survives broker restarts
-            rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false });// Persistent messages survive broker restarts
-            console.log(`Trade Stream Producer sent active trade price update for user ${singleWatch.userId}.`)
-        }
+        console.log(`Trade Stream Producer sent active trade price update for user ${singleWatch.userId}.`)
+        await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInActiveTradeQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
+    } catch (error)
+    {
+        console.error(`Trade Stream Producer failed to send active trade price update for ticker ${trade.Symbol} and user: ${singleWatch.userId}.`, error);
+    }
+}
+async function sendUserWatchListTradeRelayMessage(singleWatch, trade)
+{
+    let outgoingMessageDetails = {
+        userId: singleWatch.userId,
+        tickerSymbol: trade.Symbol,
+        plannedId: singleWatch.plannedTradeId,
+        pricePoints: singleWatch.pricePoints,
+        tradePrice: trade.Price,
+        includedInUserWatchList: singleWatch.watchListIncluded
+    }
+
+    try
+    {
+        console.log(`Trade Stream Producer sent active trade price update for user ${singleWatch.userId}.`)
+        await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInWatchListQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
     } catch (error)
     {
         console.error(`Trade Stream Producer failed to send active trade price update for ticker ${trade.Symbol} and user: ${singleWatch.userId}.`, error);
@@ -623,130 +498,90 @@ async function sendUserActiveTradeRelayMessage(singleWatch, trade)
 
 
 
-// async function sendBufferHitMessage(singleWatch, trade)
+
+
+
+
+
+// async function trialForTradeRelay(trade, userId)
 // {
-//     let outgoingMessageDetails = {
-//         userId: singleWatch.userId,
-//         Symbol: trade.Symbol,
-//         trackToTradeId: singleWatch.trackToTradeId,
-//         pricePoints: singleWatch.pricePoints,
-//         tradePrice: trade.Price,
-//         tradeStatus: singleWatch.tradeStatus
+//     if (socketConnection)
+//     {
+//         socketToFront.emit('tradeStream', { users: ['6952bd331482f8927092ddcc'], trade: { tickerSymbol: "AAT", price: Math.random() * 100 } })
+//         socketToFront.emit('tradeStream', { users: ['6952bd331482f8927092ddcc'], trade: { tickerSymbol: "SPY", price: Math.random() * 700 } })
+//         //  console.log('Emitting Trade Stream')
 //     }
-
-//     await NotificationMsg.deleteMany({ trackToTradeId: outgoingMessageDetails.trackToTradeId })
-//     const outGoingMsg = await NotificationMsg.create(outgoingMessageDetails)
-
-//     let connection;
+// }
+// async function trialActiveTradeMessage(userId)
+// {
+//     if (!usersLoggedIn.includes(userId)) return
+//     let possibleTestTickers = ['AAON', 'AAON', 'AAPL']
+//     let outgoingMessageDetails = {
+//         userId: '6952bd331482f8927092ddcc',
+//         ticker: possibleTestTickers[Math.floor(Math.random() * 2) + 1],
+//         plannedId: '695eee1fbc2c64a116d5cbd8',
+//         price: Math.random() * 100,
+//     }
 //     try
 //     {
-//         connection = await amqp.connect('amqp://localhost');
-//         const channel = await connection.createChannel();
-//         const queue = 'pricePointHit_queue';
-//         await channel.assertQueue(queue, { durable: true }); // Durable queue survives broker restarts
+//         if (rabbitConnection && rabbitChannel)
+//         {
+//             await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInActiveTradeQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
+//             //console.log(`Trade Stream Producer sent active trade price update for user ${outgoingMessageDetails.userId}.`)
+//         } else throw new Error('Rabbit connection does not exist')
 
-
-//         channel.sendToQueue(queue, Buffer.from(JSON.stringify(outGoingMsg)), { persistent: true });// Persistent messages survive broker restarts
-//         console.log(`[Producer] Sent Buffer Hit Mgs for ${outGoingMsg.Symbol} at ${outGoingMsg.tradePrice}.`);
-//         await channel.close();
 //     } catch (error)
 //     {
-//         console.error('[Producer] Error sending email job:', error);
-//     } finally
-//     {
-//         if (connection) await connection.close();
+//         console.error(`Trade Stream Producer failed to send enter/exit plan price update for ticker ${trade.Symbol} and user: ${singleWatch.userId} .`, error);
 //     }
 
+// }
+// async function trialUserPlanMessage(userId)
+// {
+//     if (!usersLoggedIn.includes(userId)) return
+//     let possibleTestTickers = ['AAON', 'AAPL', 'AARD', 'AAUC', 'AAP', 'AAT']
+//     let outgoingMessageDetails = {
+//         userId: '6952bd331482f8927092ddcc',
+//         ticker: possibleTestTickers[Math.floor(Math.random() * 5) + 1],
+//         plannedId: '695eee1fbc2c64a116d5cbd8',
+//         //pricePoints: singleWatch.pricePoints,
+//         price: Math.random() * 100,
+//     }
 
-
+//     try
+//     {
+//         if (rabbitConnection && rabbitChannel)
+//         {
+//             await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
+//             //   console.log(`Trade Stream Producer sent enter/exit plan price update for user ${outgoingMessageDetails.userId}.`)
+//         } else
+//         {
+//             rabbitConnection = await amqp.connect('amqp://localhost')
+//             rabbitChannel = await connection.createChannel();
+//             await rabbitChannel.assertQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, { durable: true }); // Durable queue survives broker restarts
+//             rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false });// Persistent messages survive broker restarts
+//             // console.log(`Trade Stream Producer sent enter/exit plan price update for user ${singleWatch.userId}.`)
+//         }
+//     } catch (error)
+//     {
+//         console.error(`Trade Stream Producer failed to send enter/exit plan price update for ticker ${trade.Symbol} and user: ${singleWatch.userId} .`, error);
+//     }
 // }
 
 
 
 
+// setInterval(() =>
+// {
+//     trialUserPlanMessage('6952bd331482f8927092ddcc')
+// }, [2000])
 
+// setInterval(() =>
+// {
+//     trialActiveTradeMessage('6952bd331482f8927092ddcc')
+// }, [3500])
 
-
-
-async function trialForTradeRelay(trade, userId)
-{
-    if (socketConnection)
-    {
-        socketToFront.emit('tradeStream', { users: ['6952bd331482f8927092ddcc'], trade: { tickerSymbol: "AAT", price: Math.random() * 100 } })
-        socketToFront.emit('tradeStream', { users: ['6952bd331482f8927092ddcc'], trade: { tickerSymbol: "SPY", price: Math.random() * 700 } })
-        //  console.log('Emitting Trade Stream')
-    }
-}
-async function trialActiveTradeMessage(userId)
-{
-    if (!usersLoggedIn.includes(userId)) return
-    let possibleTestTickers = ['AAON', 'AAON', 'AAPL']
-    let outgoingMessageDetails = {
-        userId: '6952bd331482f8927092ddcc',
-        ticker: possibleTestTickers[Math.floor(Math.random() * 2) + 1],
-        plannedId: '695eee1fbc2c64a116d5cbd8',
-        price: Math.random() * 100,
-    }
-    try
-    {
-        if (rabbitConnection && rabbitChannel)
-        {
-            await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInActiveTradeQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
-            //console.log(`Trade Stream Producer sent active trade price update for user ${outgoingMessageDetails.userId}.`)
-        } else throw new Error('Rabbit connection does not exist')
-
-    } catch (error)
-    {
-        console.error(`Trade Stream Producer failed to send enter/exit plan price update for ticker ${trade.Symbol} and user: ${singleWatch.userId} .`, error);
-    }
-
-}
-async function trialUserPlanMessage(userId)
-{
-    if (!usersLoggedIn.includes(userId)) return
-    let possibleTestTickers = ['AAON', 'AAPL', 'AARD', 'AAUC', 'AAP', 'AAT']
-    let outgoingMessageDetails = {
-        userId: '6952bd331482f8927092ddcc',
-        ticker: possibleTestTickers[Math.floor(Math.random() * 5) + 1],
-        plannedId: '695eee1fbc2c64a116d5cbd8',
-        //pricePoints: singleWatch.pricePoints,
-        price: Math.random() * 100,
-    }
-
-    try
-    {
-        if (rabbitConnection && rabbitChannel)
-        {
-            await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
-            //   console.log(`Trade Stream Producer sent enter/exit plan price update for user ${outgoingMessageDetails.userId}.`)
-        } else
-        {
-            rabbitConnection = await amqp.connect('amqp://localhost')
-            rabbitChannel = await connection.createChannel();
-            await rabbitChannel.assertQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, { durable: true }); // Durable queue survives broker restarts
-            rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false });// Persistent messages survive broker restarts
-            // console.log(`Trade Stream Producer sent enter/exit plan price update for user ${singleWatch.userId}.`)
-        }
-    } catch (error)
-    {
-        console.error(`Trade Stream Producer failed to send enter/exit plan price update for ticker ${trade.Symbol} and user: ${singleWatch.userId} .`, error);
-    }
-}
-
-
-
-
-setInterval(() =>
-{
-    trialUserPlanMessage('6952bd331482f8927092ddcc')
-}, [2000])
-
-setInterval(() =>
-{
-    trialActiveTradeMessage('6952bd331482f8927092ddcc')
-}, [3500])
-
-setInterval(() =>
-{
-    trialForTradeRelay()
-}, [2000])
+// setInterval(() =>
+// {
+//     trialForTradeRelay()
+// }, [2000])

@@ -6,7 +6,11 @@ const watchSchema = new mongoose.Schema(
         plannedTradeId: { type: String },
         pricePoints: [Number],
         purpose: Number,
-        tradeStatus: Number
+        tradeStatus: Number,
+        
+        aboveThisPriceAlert: [Number],
+        belowThisPriceAlert: [Number],
+        includedInUserWatchList: { type: Boolean, default: false }
     }, { _id: false })
 
 const tickerWatchSchema = new mongoose.Schema({
