@@ -288,8 +288,9 @@ async function removeUsersTickerWatch(updateMessage)
 //setting a plan to Active Trade such that it will send trade relays to the active trade listener instead of planned stock listener
 async function updateTickerWatchToTradeWithEnterPrice(updateMessage)
 {
-    if (!updateMessage?.Symbol) return console.log('Symbol was not provided to update')
-    const foundTicker = await TickerWatch.findById(updateMessage.Symbol)
+    if (!updateMessage.tickerSymbol) return console.log('Symbol was not provided to update')
+
+    const foundTicker = await TickerWatch.findById(updateMessage.tickerSymbol)
     if (!foundTicker) return console.log('Ticker watch was not found.')
 
     const watchReplace = {
@@ -304,7 +305,8 @@ async function updateTickerWatchToTradeWithEnterPrice(updateMessage)
             return userWatchInfo
         })
     }
-    await TickerWatch.findByIdAndUpdate(updateMessage.Symbol, watchReplace)
+
+    await TickerWatch.findByIdAndUpdate(updateMessage.tickerSymbol, watchReplace)
 }
 
 
@@ -445,9 +447,6 @@ async function sendUserPlanTradeRelayMessage(singleWatch, trade)
     try
     {
         await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
-
-        // console.log(`Trade Stream Producer sent enter/exit plan trade update for user ${singleWatch.userId}.`)
-
     } catch (error)
     {
         console.error(`Trade Stream Producer failed to send enter/exit plan price update for ticker ${trade.Symbol} and user: ${singleWatch.userId}.`, error);
@@ -460,13 +459,12 @@ async function sendUserActiveTradeRelayMessage(singleWatch, trade)
         tickerSymbol: trade.Symbol,
         plannedId: singleWatch.plannedTradeId,
         pricePoints: singleWatch.pricePoints,
-        tradePrice: trade.Price,
+        Price: trade.Price,
         includedInUserWatchList: singleWatch.watchListIncluded
     }
 
     try
     {
-        console.log(`Trade Stream Producer sent active trade price update for user ${singleWatch.userId}.`)
         await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInActiveTradeQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
     } catch (error)
     {
@@ -496,92 +494,3 @@ async function sendUserWatchListTradeRelayMessage(singleWatch, trade)
 
 
 
-
-
-
-
-
-
-
-// async function trialForTradeRelay(trade, userId)
-// {
-//     if (socketConnection)
-//     {
-//         socketToFront.emit('tradeStream', { users: ['6952bd331482f8927092ddcc'], trade: { tickerSymbol: "AAT", price: Math.random() * 100 } })
-//         socketToFront.emit('tradeStream', { users: ['6952bd331482f8927092ddcc'], trade: { tickerSymbol: "SPY", price: Math.random() * 700 } })
-//         //  console.log('Emitting Trade Stream')
-//     }
-// }
-// async function trialActiveTradeMessage(userId)
-// {
-//     if (!usersLoggedIn.includes(userId)) return
-//     let possibleTestTickers = ['AAON', 'AAON', 'AAPL']
-//     let outgoingMessageDetails = {
-//         userId: '6952bd331482f8927092ddcc',
-//         ticker: possibleTestTickers[Math.floor(Math.random() * 2) + 1],
-//         plannedId: '695eee1fbc2c64a116d5cbd8',
-//         price: Math.random() * 100,
-//     }
-//     try
-//     {
-//         if (rabbitConnection && rabbitChannel)
-//         {
-//             await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInActiveTradeQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
-//             //console.log(`Trade Stream Producer sent active trade price update for user ${outgoingMessageDetails.userId}.`)
-//         } else throw new Error('Rabbit connection does not exist')
-
-//     } catch (error)
-//     {
-//         console.error(`Trade Stream Producer failed to send enter/exit plan price update for ticker ${trade.Symbol} and user: ${singleWatch.userId} .`, error);
-//     }
-
-// }
-// async function trialUserPlanMessage(userId)
-// {
-//     if (!usersLoggedIn.includes(userId)) return
-//     let possibleTestTickers = ['AAON', 'AAPL', 'AARD', 'AAUC', 'AAP', 'AAT']
-//     let outgoingMessageDetails = {
-//         userId: '6952bd331482f8927092ddcc',
-//         ticker: possibleTestTickers[Math.floor(Math.random() * 5) + 1],
-//         plannedId: '695eee1fbc2c64a116d5cbd8',
-//         //pricePoints: singleWatch.pricePoints,
-//         price: Math.random() * 100,
-//     }
-
-//     try
-//     {
-//         if (rabbitConnection && rabbitChannel)
-//         {
-//             await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
-//             //   console.log(`Trade Stream Producer sent enter/exit plan price update for user ${outgoingMessageDetails.userId}.`)
-//         } else
-//         {
-//             rabbitConnection = await amqp.connect('amqp://localhost')
-//             rabbitChannel = await connection.createChannel();
-//             await rabbitChannel.assertQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, { durable: true }); // Durable queue survives broker restarts
-//             rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false });// Persistent messages survive broker restarts
-//             // console.log(`Trade Stream Producer sent enter/exit plan price update for user ${singleWatch.userId}.`)
-//         }
-//     } catch (error)
-//     {
-//         console.error(`Trade Stream Producer failed to send enter/exit plan price update for ticker ${trade.Symbol} and user: ${singleWatch.userId} .`, error);
-//     }
-// }
-
-
-
-
-// setInterval(() =>
-// {
-//     trialUserPlanMessage('6952bd331482f8927092ddcc')
-// }, [2000])
-
-// setInterval(() =>
-// {
-//     trialActiveTradeMessage('6952bd331482f8927092ddcc')
-// }, [3500])
-
-// setInterval(() =>
-// {
-//     trialForTradeRelay()
-// }, [2000])
