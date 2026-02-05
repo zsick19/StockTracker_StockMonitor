@@ -7,11 +7,16 @@ const { io } = require('socket.io-client')
 const TickerWatch = require('./models/TickerWatch')
 const NotificationMsg = require('./models/NotificationMsg')
 
+const MacroTickerWatch = require('./models/MacroTickerWatch')
+
+
+
 
 
 const usersLoggedIn = []
 const tempTickersPerUser = {} //{tickerSymbol:[userId1,userId2],tickerSymbol:[userId3,userId2]}
-const macroTickersDefaultToEveryUser = ['SPY', 'DIA']
+const macroTickersDefaultToEveryUser = ['SPY', 'ES', 'DIA', 'QQQ', 'IWM', 'TLT', 'XLRE', 'XLY', 'XLK', 'XLF', 'XLU', 'XLP', 'XLE', 'XLC', 'XLI', 'XLV', 'XLB', 'GLD', 'SLV', 'GDX', 'SMH', 'XBI', 'KRE', 'XOP', 'XRT']
+
 //const watchListTickersPerUser = {} //tickerSymbol:[userId]
 
 const rabbitQueueNames = {
@@ -73,12 +78,27 @@ mongoose.connection.once('open', () =>
     console.log('Fetching initial list of stocks from DB')
     mongooseConnection = true
     fetchInitialTickers()
+    fetchInitialMacroTickers()
+
     startConnectionToRabbitMQ(alpacaStream)
     async function fetchInitialTickers()
     {
         try
         {
             const results = await TickerWatch.find({}, { _id: 1 })
+            let tradeTickersFromDB = results.map((watchInfo, i) => { return watchInfo._id })
+            if (alpacaStream && tradeTickersFromDB.length > 0) alpacaStream.addTickerToAlpacaDataStream(tradeTickersFromDB)
+            alpacaStream.addTickerToAlpacaDataStream(macroTickersDefaultToEveryUser)
+        } catch (error)
+        {
+            console.log(error)
+        }
+    }
+    async function fetchInitialMacroTickers()
+    {
+        try
+        {
+            const results = await MacroTickerWatch.find({}, { _id: 1 })
             let tradeTickersFromDB = results.map((watchInfo, i) => { return watchInfo._id })
             if (alpacaStream && tradeTickersFromDB.length > 0) alpacaStream.addTickerToAlpacaDataStream(tradeTickersFromDB)
         } catch (error)
@@ -147,6 +167,7 @@ async function startConnectionToRabbitMQ(tickerDataStream)
                 rabbitChannel.ack(msg);
             }
         }, { noAck: false });
+
 
 
         //Active Trade Entering and Exiting 
@@ -378,7 +399,7 @@ alpacaStream.socket.onStockTrade((trade) =>
 
 async function checkIfDefaultMacroTrade(trade)
 {
-    if (macroTickersDefaultToEveryUser.includes(trade.Symbol) && socketConnection) socketToFront.emit('macroTradeUpdate', { users: usersLoggedIn, trade })
+    if (macroTickersDefaultToEveryUser.includes(trade.Symbol) && socketConnection) socketToFront.emit('macroWatchListUpdate', { users: usersLoggedIn, trade })
 }
 async function checkIfUserIsLoggedInForTradeStream(trade)
 {
