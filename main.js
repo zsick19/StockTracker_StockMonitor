@@ -282,25 +282,52 @@ async function updateUsersTickerWatchPricePoints(updateMessage)
 }
 async function removeUsersTickerWatch(updateMessage)
 {
-    const foundTicker = await TickerWatch.findById(updateMessage.tickerSymbol)
-    if (!foundTicker) return
-
-    const watchReplace = {
-        _id: foundTicker._id,
-        watchInfo: foundTicker.watchInfo.filter((userWatchInfo, i) =>
-        { userWatchInfo.userId !== updateMessage.userId })
-    }
-
-    if (watchReplace.watchInfo.length === 0)
+    if (updateMessage.tickerSymbol?.length)
     {
-        await TickerWatch.findByIdAndDelete(updateMessage.tickerSymbol)
-        if (alpacaStream) alpacaStream.removeTickerFromAlpacaDataStream([updateMessage.Symbol])
-    }
-    else
+        console.log(updateMessage)
+        let tickerConfirmedForRemoval = []
+
+
+        for (const tickerToBeRemovedOrUpdated of updateMessage.tickerSymbol)
+        {
+            const foundTicker = await TickerWatch.findById(tickerToBeRemovedOrUpdated)
+            if (!foundTicker) return
+
+            const watchReplace = {
+                _id: foundTicker._id,
+                watchInfo: foundTicker.watchInfo.filter((userWatchInfo, i) =>
+                { userWatchInfo.userId !== updateMessage.userId })
+            }
+
+            if (watchReplace.watchInfo.length === 0) { tickerConfirmedForRemoval.push(watchReplace._id) }
+            else { TickerWatch.findByIdAndUpdate(updateMessage.Symbol, watchReplace) }
+        }
+
+        const removalResult = await TickerWatch.deleteMany({ _id: { $in: tickerConfirmedForRemoval } })
+        if (alpacaStream) alpacaStream.removeTickerFromAlpacaDataStream(tickerConfirmedForRemoval)
+    } else
     {
-        await TickerWatch.findByIdAndUpdate(updateMessage.Symbol, watchReplace)
+        console.log(updateMessage.tickerSymbol)
+        const foundTicker = await TickerWatch.findById(updateMessage.tickerSymbol)
+        if (!foundTicker) return
+
+        const watchReplace = {
+            _id: foundTicker._id,
+            watchInfo: foundTicker.watchInfo.filter((userWatchInfo, i) =>
+            { userWatchInfo.userId !== updateMessage.userId })
+        }
+
+        if (watchReplace.watchInfo.length === 0)
+        {
+            await TickerWatch.findByIdAndDelete(updateMessage.tickerSymbol)
+            if (alpacaStream) alpacaStream.removeTickerFromAlpacaDataStream([updateMessage.Symbol])
+        }
+        else
+        {
+            await TickerWatch.findByIdAndUpdate(updateMessage.Symbol, watchReplace)
+        }
+        console.log(updateMessage)
     }
-    console.log(updateMessage)
 }
 
 
