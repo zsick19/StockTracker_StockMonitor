@@ -162,7 +162,11 @@ async function startConnectionToRabbitMQ(tickerDataStream)
             if (msg)
             {
                 const content = JSON.parse(msg.content.toString());
-                if (content.data?.remove) { removeUsersTickerWatch(content.data) }
+                if (content.data?.remove)
+                {
+                    console.log('Attempting to jump to removing ticker watch')
+                    removeUsersTickerWatch(content.data)
+                }
                 else { updateUsersTickerWatchPricePoints(content.data) }
                 rabbitChannel.ack(msg);
             }
@@ -282,12 +286,9 @@ async function updateUsersTickerWatchPricePoints(updateMessage)
 }
 async function removeUsersTickerWatch(updateMessage)
 {
-    if (updateMessage.tickerSymbol?.length)
+    if (Array.isArray(updateMessage.tickerSymbol))
     {
-        console.log(updateMessage)
         let tickerConfirmedForRemoval = []
-
-
         for (const tickerToBeRemovedOrUpdated of updateMessage.tickerSymbol)
         {
             const foundTicker = await TickerWatch.findById(tickerToBeRemovedOrUpdated)
@@ -307,7 +308,6 @@ async function removeUsersTickerWatch(updateMessage)
         if (alpacaStream) alpacaStream.removeTickerFromAlpacaDataStream(tickerConfirmedForRemoval)
     } else
     {
-        console.log(updateMessage.tickerSymbol)
         const foundTicker = await TickerWatch.findById(updateMessage.tickerSymbol)
         if (!foundTicker) return
 
@@ -320,13 +320,9 @@ async function removeUsersTickerWatch(updateMessage)
         if (watchReplace.watchInfo.length === 0)
         {
             await TickerWatch.findByIdAndDelete(updateMessage.tickerSymbol)
-            if (alpacaStream) alpacaStream.removeTickerFromAlpacaDataStream([updateMessage.Symbol])
+            if (alpacaStream) alpacaStream.removeTickerFromAlpacaDataStream([updateMessage.tickerSymbol])
         }
-        else
-        {
-            await TickerWatch.findByIdAndUpdate(updateMessage.Symbol, watchReplace)
-        }
-        console.log(updateMessage)
+        else { await TickerWatch.findByIdAndUpdate(updateMessage.tickerSymbol, watchReplace) }
     }
 }
 
