@@ -162,11 +162,7 @@ async function startConnectionToRabbitMQ(tickerDataStream)
             if (msg)
             {
                 const content = JSON.parse(msg.content.toString());
-                if (content.data?.remove)
-                {
-                    console.log('Attempting to jump to removing ticker watch')
-                    removeUsersTickerWatch(content.data)
-                }
+                if (content.data?.remove) { removeUsersTickerWatch(content.data) }
                 else { updateUsersTickerWatchPricePoints(content.data) }
                 rabbitChannel.ack(msg);
             }
@@ -196,7 +192,7 @@ async function startConnectionToRabbitMQ(tickerDataStream)
             if (msg)
             {
                 const content = JSON.parse(msg.content.toString())
-                console.log(`Attempting to add ${content.data.tickerSymbol} to temp ticker stream via singleGraphTickerQueue.`)
+                //console.log(`Attempting to add ${content.data.tickerSymbol} to temp ticker stream via singleGraphTickerQueue.`)
                 try { initiateSingleTickerStream(content, tickerDataStream) }
                 catch (error) { console.error(`Error occurred trying to add ${content.data.tickerSymbol} to Temp Ticker stream via singleGraphTickerQueue`) }
                 rabbitChannel.ack(msg)
