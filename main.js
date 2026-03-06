@@ -5,8 +5,6 @@ const connectDB = require('./dbConnect')
 const mongoose = require('mongoose')
 const { io } = require('socket.io-client')
 const TickerWatch = require('./models/TickerWatch')
-const NotificationMsg = require('./models/NotificationMsg')
-
 const MacroTickerWatch = require('./models/MacroTickerWatch')
 
 
@@ -15,7 +13,8 @@ const MacroTickerWatch = require('./models/MacroTickerWatch')
 
 const usersLoggedIn = []
 const tempTickersPerUser = {} //{tickerSymbol:[userId1,userId2],tickerSymbol:[userId3,userId2]}
-const macroTickersDefaultToEveryUser = ['SPY', 'ES', 'DIA', 'QQQ', 'IWM', 'TLT', 'XLRE', 'XLY', 'XLK', 'XLF', 'XLU', 'XLP', 'XLE', 'XLC', 'XLI', 'XLV', 'XLB', 'GLD', 'SLV', 'GDX', 'SMH', 'XBI', 'KRE', 'XOP', 'XRT']
+const macroTickersDefaultToEveryUser = ['SPY', 'ES', 'DIA', 'QQQ', 'IWM', 'TLT', 'XLRE', 'XLY', 'XLK', 'XLF', 'XLU', 'XLP', 'XLE',
+    'XLC', 'XLI', 'XLV', 'XLB', 'GLD', 'SLV', 'GDX', 'SMH', 'XBI', 'KRE', 'XOP', 'XRT']
 
 //const watchListTickersPerUser = {} //tickerSymbol:[userId]
 
@@ -135,11 +134,11 @@ async function startConnectionToRabbitMQ(tickerDataStream)
             if (msg)
             {
                 const content = JSON.parse(msg.content.toString());
-                console.log(`Message received to add User: ${content.data.userId}.`)
+                //console.log(`Message received to add User: ${content.data.userId}.`)
                 if (!usersLoggedIn.includes(content.data.userId))
                 {
                     usersLoggedIn.push(content.data.userId)
-                    console.log(`${content.data.userId} added to the local usersLoggedIn Array`)
+                    //console.log(`${content.data.userId} added to the local usersLoggedIn Array`)
                 }
                 rabbitChannel.ack(msg);
             }
@@ -152,7 +151,7 @@ async function startConnectionToRabbitMQ(tickerDataStream)
             if (msg)
             {
                 const content = JSON.parse(msg.content.toString());
-                console.log(`Message received on the Initiate Queue for adding ${content.data.tickerSymbol} via user ${content.data.userId}.`)
+                //console.log(`Message received on the Initiate Queue for adding ${content.data.tickerSymbol} via user ${content.data.userId}.`)
                 findOrCreateTickerWatch(content, tickerDataStream)
                 rabbitChannel.ack(msg);
             }
@@ -268,13 +267,8 @@ async function updateUsersTickerWatchPricePoints(updateMessage)
         _id: foundTickerWatch._id,
         watchInfo: foundTickerWatch.watchInfo.map((userPrice, i) =>
         {
-            if (userPrice.userId === updateMessage.userId)
-            {
-                return { ...userPrice, pricePoints: updateMessage.pricePoints }
-            } else
-            {
-                return userPrice
-            }
+            if (userPrice.userId === updateMessage.userId) { return { ...userPrice, pricePoints: updateMessage.pricePoints } }
+            else { return userPrice }
         }),
     }
 
