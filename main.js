@@ -13,7 +13,7 @@ const MacroTickerWatch = require('./models/MacroTickerWatch')
 
 const usersLoggedIn = []
 const tempTickersPerUser = {} //{tickerSymbol:[userId1,userId2],tickerSymbol:[userId3,userId2]}
-const macroTickersDefaultToEveryUser = ['SPY', 'ES', 'DIA', 'QQQ', 'IWM', 'TLT', 'XLRE', 'XLY', 'XLK', 'XLF', 'XLU', 'XLP', 'XLE',
+const macroTickersDefaultToEveryUser = ['SPY', 'DIA', 'QQQ', 'IWM', 'TLT', 'XLRE', 'XLY', 'XLK', 'XLF', 'XLU', 'XLP', 'XLE',
     'XLC', 'XLI', 'XLV', 'XLB', 'GLD', 'SLV', 'GDX', 'SMH', 'XBI', 'KRE', 'XOP', 'XRT']
 
 //const watchListTickersPerUser = {} //tickerSymbol:[userId]
@@ -27,7 +27,8 @@ const rabbitQueueNames = {
     singleGraphTickerQueue: 'SingleTicker_temporaryTradeQueue',
     removeTempTickerQueue: 'removeTempTicker',
     enterExitTradeQueue: 'enterExitTradeQueue',
-    loggedInWatchListQueue: 'loggedInWatchListQueue'
+    loggedInWatchListQueue: 'loggedInWatchListQueue',
+    updateEMAlertQueue: 'updateEMAlert'
 }
 
 let rabbitConnection = undefined
@@ -66,7 +67,7 @@ alpacaStream.socket.onDisconnect(() =>
 })
 
 
-
+let suppliedMacroTickersForSTD = {}
 
 //////////////////////////////////////////////////////////////////////////////////////
 ///////////      MongoDB initial pull of trade/bar tickers for Alpaca       //////////
@@ -87,7 +88,6 @@ mongoose.connection.once('open', () =>
             const results = await TickerWatch.find({}, { _id: 1 })
             let tradeTickersFromDB = results.map((watchInfo, i) => { return watchInfo._id })
             if (alpacaStream && tradeTickersFromDB.length > 0) alpacaStream.addTickerToAlpacaDataStream(tradeTickersFromDB)
-            alpacaStream.addTickerToAlpacaDataStream(macroTickersDefaultToEveryUser)
         } catch (error)
         {
             console.log(error)
@@ -97,9 +97,15 @@ mongoose.connection.once('open', () =>
     {
         try
         {
-            const results = await MacroTickerWatch.find({}, { _id: 1 })
-            let tradeTickersFromDB = results.map((watchInfo, i) => { return watchInfo._id })
+            let results = await MacroTickerWatch.find({})
+
+            let tradeTickersFromDB = results.map((watchInfo, i) =>
+            {
+                suppliedMacroTickersForSTD[watchInfo._id] = { watch: watchInfo.watchInfo[0], mostRecentDailyLevel: 2 }
+                return watchInfo._id
+            })
             if (alpacaStream && tradeTickersFromDB.length > 0) alpacaStream.addTickerToAlpacaDataStream(tradeTickersFromDB)
+            alpacaStream.addTickerToAlpacaDataStream(macroTickersDefaultToEveryUser)
         } catch (error)
         {
             console.log(error)
@@ -124,6 +130,7 @@ async function startConnectionToRabbitMQ(tickerDataStream)
         await rabbitChannel.assertQueue(rabbitQueueNames.singleGraphTickerQueue, { durable: true })
         await rabbitChannel.assertQueue(rabbitQueueNames.removeTempTickerQueue, { durable: true })
         await rabbitChannel.assertQueue(rabbitQueueNames.loggedInWatchListQueue, { durable: true })
+        await rabbitChannel.assertQueue(rabbitQueueNames.updateEMAlertQueue, { durable: true })
         rabbitChannel.prefetch(1)
         console.log('Consumer connected to RabbitMQ. Waiting for message')
 
@@ -208,13 +215,35 @@ async function startConnectionToRabbitMQ(tickerDataStream)
             }
         }, { noAck: false })
 
+
+        rabbitChannel.consume(rabbitQueueNames.updateEMAlertQueue, (msg) =>
+        {
+            if (msg)
+            {
+                const content = JSON.parse(msg.content.toString())
+                reFetchMacroSTD()
+                rabbitChannel.ack(msg)
+            }
+        }, { noAck: false })
+
+
     } catch (error)
     {
         console.error('Error in consumer:', error);
     }
 }
 
-
+async function reFetchMacroSTD()
+{
+    try
+    {
+        let results = await MacroTickerWatch.find({})
+        results.map((watchInfo, i) => { suppliedMacroTickersForSTD[watchInfo._id] = { watch: watchInfo.watchInfo[0], mostRecentDailyLevel: 2 } })
+    } catch (error)
+    {
+        console.log(error)
+    }
+}
 
 
 //adding,updating,removing plans to TickerWatch (exiting a trade removes TickerWatch)
@@ -412,23 +441,109 @@ alpacaStream.socket.onStockTrade((trade) =>
 
 async function checkIfDefaultMacroTrade(trade)
 {
-    if (macroTickersDefaultToEveryUser.includes(trade.Symbol) && socketConnection) socketToFront.emit('macroWatchListUpdate', { users: usersLoggedIn, trade })
+    if (macroTickersDefaultToEveryUser.includes(trade.Symbol) && socketConnection)
+    {
+        socketToFront.emit('macroWatchListUpdate', { users: usersLoggedIn, trade })
+        checkForSTDChange(trade)
+    }
 }
+
+async function checkForSTDChange(trade)
+{
+    if (suppliedMacroTickersForSTD[trade.Symbol])
+    {
+        const index = suppliedMacroTickersForSTD[trade.Symbol].watch.dailyEM.findIndex(num => num >= trade.Price);
+        if (index !== 2)
+        {
+            switch (index)
+            {
+                case 0:
+                    if (suppliedMacroTickersForSTD[trade.Symbol].mostRecentDailyLevel !== 0)
+                    {
+                        console.log(`${trade.Symbol} below daily 2std`);
+                        console.log('below daily 2std');
+                        socketToFront.emit('coreSTDHit', {
+                            users: usersLoggedIn, tradeInfo: {
+                                Symbol: trade.Symbol, Price: trade.Price,
+                                std: 'daily2Std', direction: 'Lower', EM: suppliedMacroTickersForSTD[trade.Symbol].watch.dailyEM, timeStamp: new Date()
+                            }
+                        })
+                        suppliedMacroTickersForSTD[trade.Symbol].mostRecentDailyLevel = 0
+                    }
+                    break;
+                case 1:
+                    if (suppliedMacroTickersForSTD[trade.Symbol].mostRecentDailyLevel !== 1)
+                    {
+                        console.log(`${trade.Symbol} below daily 1std`);
+                        console.log('sending alert message via stream')
+                        socketToFront.emit('coreSTDHit', {
+                            users: usersLoggedIn, tradeInfo: {
+                                Symbol: trade.Symbol, Price: trade.Price,
+                                std: 'daily1Std', direction: 'Lower', EM: suppliedMacroTickersForSTD[trade.Symbol].watch.dailyEM, timeStamp: new Date()
+                            }
+                        })
+                        suppliedMacroTickersForSTD[trade.Symbol].mostRecentDailyLevel = 1
+                    }
+                    break;
+                case 3:
+                    if (suppliedMacroTickersForSTD[trade.Symbol].mostRecentDailyLevel !== 3)
+                    {
+                        console.log(`${trade.Symbol} above daily 1std`);
+                        console.log('sending alert message via stream')
+                        socketToFront.emit('coreSTDHit', {
+                            users: usersLoggedIn, tradeInfo: {
+                                Symbol: trade.Symbol, Price: trade.Price,
+                                std: 'daily1Std', direction: 'Upper', EM: suppliedMacroTickersForSTD[trade.Symbol].watch.dailyEM, timeStamp: new Date()
+                            }
+                        })
+                        suppliedMacroTickersForSTD[trade.Symbol].mostRecentDailyLevel = 3
+                    }
+                    break;
+                default: if (suppliedMacroTickersForSTD[trade.Symbol].mostRecentDailyLevel !== 4)
+                {
+                    console.log(`${trade.Symbol} above daily 2std`);
+                    console.log('sending alert message via stream')
+                    socketToFront.emit('coreSTDHit', {
+                        users: usersLoggedIn, tradeInfo: {
+                            Symbol: trade.Symbol, Price: trade.Price,
+                            std: 'daily2Std', direction: 'Upper', EM: suppliedMacroTickersForSTD[trade.Symbol].watch.dailyEM, timeStamp: new Date()
+                        }
+                    })
+                    suppliedMacroTickersForSTD[trade.Symbol].mostRecentDailyLevel = 4
+                }
+                    break;
+            }
+        } else if (suppliedMacroTickersForSTD[trade.Symbol].mostRecentDailyLevel !== 2)
+        {
+            suppliedMacroTickersForSTD[trade.Symbol].mostRecentDailyLevel = 2
+        }
+
+    }
+
+}
+
 async function checkIfUserIsLoggedInForTradeStream(trade)
 {
     try
     {
         const foundSymbol = await TickerWatch.findById(trade.Symbol)
         if (!foundSymbol) return
-
         foundSymbol.watchInfo.forEach((singleWatch) =>
         {
-            if (!usersLoggedIn.includes(singleWatch.userId)) return
+            if (!usersLoggedIn.includes(singleWatch.userId))
+            {
+                console.log('user not logged in')
+                return
+            }
             switch (singleWatch.purpose)
             {
                 case -1: sendUserWatchListTradeRelayMessage(); break;//Only watchlist
                 case 0: sendUserPlanTradeRelayMessage(singleWatch, trade); break; //PlannedStock
-                case 1: sendUserActiveTradeRelayMessage(singleWatch, trade); break; //ActiveTradeStock
+                case 1:
+                    sendUserActiveTradeRelayMessage(singleWatch, trade)
+                    // console.log(trade.Symbol, trade.Price)
+                    break; //ActiveTradeStock
+
             }
 
             //check price against any price below/price above and send those messages out if user is logged in
@@ -481,6 +596,7 @@ async function sendUserPlanTradeRelayMessage(singleWatch, trade)
     try
     {
         await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
+        // console.log(`Trade sent for ${outgoingMessageDetails.tickerSymbol} - ${outgoingMessageDetails.Price} via planned Trade`)
     } catch (error)
     {
         console.error(`Trade Stream Producer failed to send enter/exit plan price update for ticker ${trade.Symbol} and user: ${singleWatch.userId}.`, error);
@@ -500,6 +616,7 @@ async function sendUserActiveTradeRelayMessage(singleWatch, trade)
     try
     {
         await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInActiveTradeQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
+        // console.log(`Trade sent for ${outgoingMessageDetails.tickerSymbol} - ${outgoingMessageDetails.Price} via active Trade`)
     } catch (error)
     {
         console.error(`Trade Stream Producer failed to send active trade price update for ticker ${trade.Symbol} and user: ${singleWatch.userId}.`, error);
