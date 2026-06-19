@@ -515,9 +515,7 @@ async function checkForSTDChange(trade)
         {
             suppliedMacroTickersForSTD[trade.Symbol].mostRecentDailyLevel = 2
         }
-
     }
-
 }
 
 async function checkIfUserIsLoggedInForTradeStream(trade)
@@ -526,6 +524,7 @@ async function checkIfUserIsLoggedInForTradeStream(trade)
     {
         const foundSymbol = await TickerWatch.findById(trade.Symbol)
         if (!foundSymbol) return
+
         foundSymbol.watchInfo.forEach((singleWatch) =>
         {
             if (!usersLoggedIn.includes(singleWatch.userId))
@@ -538,16 +537,39 @@ async function checkIfUserIsLoggedInForTradeStream(trade)
             {
                 case -1: sendUserWatchListTradeRelayMessage(); break;//Only watchlist
                 case 0: sendUserPlanTradeRelayMessage(singleWatch, trade); break; //PlannedStock
-                case 1:
-                    sendUserActiveTradeRelayMessage(singleWatch, trade)
-                    // console.log(trade.Symbol, trade.Price)
-                    break; //ActiveTradeStock
-
+                case 1: sendUserActiveTradeRelayMessage(singleWatch, trade); break; //ActiveTradeStock
             }
 
-            //check price against any price below/price above and send those messages out if user is logged in
+            if (singleWatch.belowThisPriceAlert.length > 0)
+            {
+                let lowestPriceAlert
+                singleWatch.belowThisPriceAlert.forEach((t) =>
+                {
+                    if (trade.Price < t.price)
+                    {
+                        if (!lowestPriceAlert) lowestPriceAlert = t
+                        else
+                        {
+                            if (lowestPriceAlert.price > t.price) lowestPriceAlert = t
+                        }
+                    }
+                })
+                if (lowestPriceAlert) sendPriceAlertRelayMessage(singleWatch, lowestPriceAlert, true, trade)
+            }
 
-
+            if (singleWatch.aboveThisPriceAlert.length > 0)
+            {
+                let highestPriceAlert
+                singleWatch.aboveThisPriceAlert.forEach((t) =>
+                {
+                    if (trade.Price > t.price)
+                    {
+                        if (!highestPriceAlert) highestPriceAlert = t
+                        else { if (highestPriceAlert.price > t.price) highestPriceAlert = t }
+                    }
+                })
+                if (highestPriceAlert) sendPriceAlertRelayMessage(singleWatch, highestPriceAlert, false, trade)
+            }
         })
 
     } catch (error)
@@ -556,6 +578,11 @@ async function checkIfUserIsLoggedInForTradeStream(trade)
     }
 
 }
+
+
+
+
+
 async function relayTradeToAnyTempUserTicker(trade)
 {
     try
@@ -589,6 +616,8 @@ async function sendUserPlanTradeRelayMessage(singleWatch, trade)
         plannedId: singleWatch.plannedTradeId,
         pricePoints: singleWatch.pricePoints,
         tradePrice: trade.Price,
+        size: trade.Size,
+        trade: trade,
         includedInUserWatchList: singleWatch.watchListIncluded
     }
 
@@ -609,6 +638,8 @@ async function sendUserActiveTradeRelayMessage(singleWatch, trade)
         plannedId: singleWatch.plannedTradeId,
         pricePoints: singleWatch.pricePoints,
         Price: trade.Price,
+        Size: trade.Size,
+        Timestamp: trade.Timestamp,
         includedInUserWatchList: singleWatch.watchListIncluded
     }
 
@@ -643,4 +674,11 @@ async function sendUserWatchListTradeRelayMessage(singleWatch, trade)
 }
 
 
+async function sendPriceAlertRelayMessage(singleWatch, priceAlert, aboveOrBelow, trade)
+{
+    socketToFront.emit('priceAlert', {
+        Symbol: trade.Symbol, Price: trade.Price, plannedTradeId: singleWatch.plannedTradeId, userId: singleWatch.userId,
+        priceAlert, belowAlertPrice: aboveOrBelow, timeStamp: new Date()
+    })
+}
 
