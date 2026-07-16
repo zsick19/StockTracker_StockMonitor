@@ -8,7 +8,12 @@ class DataStream
         const socket = this.alpaca.data_stream_v2;
         this.socket = socket
 
-        this.socket.onConnect(function () { console.log("Connected To Alpaca Data Stream"); });
+        this.socket.onConnect(() =>
+        {
+
+            console.log("Connected To Alpaca Data Stream");
+            this.socket.session.subscriptions.quotes = []
+        });
         this.socket.onError((err) => { console.log(err); });
         this.socket.onStateChange((state) => { console.log(state); });
 
@@ -38,7 +43,18 @@ class DataStream
         }
     }
 
-
+    addTickerToAlpacaQuoteStream(tickerToAdd)
+    {
+        try
+        {
+            if (!this.socket.session.subscriptions.quotes) this.socket.session.subscriptions.quotes = []
+            this.socket.subscribeForQuotes(tickerToAdd);
+            console.log(`${tickerToAdd.toString()} added to alpaca quote data stream`)
+        } catch (error)
+        {
+            console.log(`Error adding ${tickerToAdd.toString()} to alpaca Quote Data Stream.`, error)
+        }
+    }
 
 
     addTickerToAlpacaMinuteDataStream(tickerToAdd)

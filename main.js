@@ -13,6 +13,7 @@ const MacroTickerWatch = require('./models/MacroTickerWatch')
 
 const usersLoggedIn = []
 const tempTickersPerUser = {} //{tickerSymbol:[userId1,userId2],tickerSymbol:[userId3,userId2]}
+const tempTickerQuotesPerUser = {}
 let macroTickersDefaultToEveryUser = []
 // ['SPY', 'DIA', 'QQQ', 'IWM', 'TLT', 'XLRE', 'XLY', 'XLK', 'XLF', 'XLU', 'XLP', 'XLE',
 //     'XLC', 'XLI', 'XLV', 'XLB', 'GLD', 'SLV', 'GDX', 'SMH', 'XBI', 'KRE', 'XOP', 'XRT']
@@ -29,7 +30,9 @@ const rabbitQueueNames = {
     removeTempTickerQueue: 'removeTempTicker',
     enterExitTradeQueue: 'enterExitTradeQueue',
     loggedInWatchListQueue: 'loggedInWatchListQueue',
-    updateEMAlertQueue: 'updateEMAlert'
+    updateEMAlertQueue: 'updateEMAlert',
+    liveQuotesSubscribe: 'liveQuotesSubscribe'
+
 }
 
 let rabbitConnection = undefined
@@ -133,6 +136,7 @@ async function startConnectionToRabbitMQ(tickerDataStream)
         await rabbitChannel.assertQueue(rabbitQueueNames.removeTempTickerQueue, { durable: true })
         await rabbitChannel.assertQueue(rabbitQueueNames.loggedInWatchListQueue, { durable: true })
         await rabbitChannel.assertQueue(rabbitQueueNames.updateEMAlertQueue, { durable: true })
+        await rabbitChannel.assertQueue(rabbitQueueNames.liveQuotesSubscribe, { durable: true })
         rabbitChannel.prefetch(1)
         console.log('Consumer connected to RabbitMQ. Waiting for message')
 
@@ -148,6 +152,23 @@ async function startConnectionToRabbitMQ(tickerDataStream)
                 rabbitChannel.ack(msg);
             }
         })
+
+        //Add ticker to quote and trade stream for deep discount watch
+        rabbitChannel.consume(rabbitQueueNames.liveQuotesSubscribe, (msg) =>
+        {
+            if (msg)
+            {
+                const content = JSON.parse(msg.content.toString())
+                try { initiateSingleTickerQuoteStream(content, tickerDataStream) }
+                catch (error) { console.error(`Error occurred trying to initiate a quote stream for ${content.data.tickerSymbol} via liveQuotesSubscribe`) }
+                try { initiateSingleTickerStream(content, tickerDataStream) }
+                catch (error) { console.error(`Error occurred trying to add ${content.data.tickerSymbol} to Temp Ticker stream via liveQuotesSubscribe`) }
+
+
+                rabbitChannel.ack(msg)
+            }
+        })
+
 
 
         //Listening for new or updated Planned Stocks
@@ -416,6 +437,23 @@ async function removeSingleTickerStream(content, tickerDataStream)
 }
 
 
+//add quote and trade stream associated with the userId
+async function initiateSingleTickerQuoteStream(content, tickerDataStream)
+{
+    const { tickerSymbol, userId } = content.data
+    console.log(tickerSymbol)
+    if (!tickerSymbol || !userId) return console.log('Missing fields upon single ticker stream initiate')
+
+    if (tickerSymbol in tempTickerQuotesPerUser)
+    {
+        if (!tempTickerQuotesPerUser[tickerSymbol].includes(userId)) { tempTickerQuotesPerUser[tickerSymbol].push(userId) }
+    } else
+    {
+        tempTickerQuotesPerUser[tickerSymbol] = [userId]
+        tickerDataStream.addTickerToAlpacaQuoteStream([tickerSymbol])
+    }
+}
+
 
 
 
@@ -434,6 +472,20 @@ alpacaStream.socket.onStockTrade((trade) =>
     checkIfDefaultMacroTrade(trade)
     checkIfUserIsLoggedInForTradeStream(trade)
     relayTradeToAnyTempUserTicker(trade)
+})
+
+alpacaStream.socket.onStockQuote((quote) =>
+{
+    try
+    {
+        if (socketConnection && quote.Symbol in tempTickerQuotesPerUser && tempTickerQuotesPerUser[quote.Symbol].length > 0)
+        {
+            socketToFront.emit('quoteStream', { users: tempTickerQuotesPerUser[quote.Symbol], quote })
+        }
+    } catch (error)
+    {
+        console.log(error)
+    }
 })
 
 
@@ -579,6 +631,9 @@ async function checkIfUserIsLoggedInForTradeStream(trade)
 
 }
 
+// async function checkIfTradeIsStreamingQuotes(trade) {
+//     if()   
+// }
 
 
 
@@ -595,6 +650,17 @@ async function relayTradeToAnyTempUserTicker(trade)
     {
         console.log(error)
     }
+
+    // try
+    // {
+    //     if (socketConnection && trade.Symbol in tempTickerQuotesPerUser && tempTickerQuotesPerUser[trade.Symbol].length > 0)
+    //     {
+    //         socketToFront.emit('tradeQuoteStream', { users: tempTickerQuotesPerUser[trade.Symbol], trade })
+    //     }
+    // } catch (error)
+    // {
+    //     console.log(error)
+    // }
 }
 
 
@@ -624,7 +690,7 @@ async function sendUserPlanTradeRelayMessage(singleWatch, trade)
     try
     {
         await rabbitChannel.sendToQueue(rabbitQueueNames.loggedInEnterExitPlanQueue, Buffer.from(JSON.stringify(outgoingMessageDetails)), { persistent: false })
-        // console.log(`Trade sent for ${outgoingMessageDetails.tickerSymbol} - ${outgoingMessageDetails.tradePrice} via planned Trade`)
+        // console.log(`${outgoingMessageDetails.tickerSymbol} - ${outgoingMessageDetails.tradePrice}`)
     } catch (error)
     {
         console.error(`Trade Stream Producer failed to send enter/exit plan price update for ticker ${trade.Symbol} and user: ${singleWatch.userId}.`, error);
