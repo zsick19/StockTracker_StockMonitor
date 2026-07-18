@@ -56,18 +56,27 @@ socketToFront.on('connect', () =>
 //////////////////////////////////////////////////////////////////////////////////////
 let mongooseConnection = false
 let alpacaStream = new DataStream({ apiKey: process.env.ALPACA_API_PAPER, secretKey: process.env.ALPACA_API_PAPER_SECRET, paper: true });
+let timeOutAttemptToReconnect
 alpacaStream.socket.onConnect(() =>
 {
-    if (mongooseConnection) { fetchInitialTickers() }
-    else connectDB()
+    connectDB()
+    fetchInitialTickers()
+    // if (mongooseConnection) {         fetchInitialTickers()     }
+    // else connectDB()
+    if (timeOutAttemptToReconnect) clearTimeout(timeOutAttemptToReconnect)
     connectionEstablished = true
 });
+
+alpacaStream.socket.onError(() =>
+{
+    console.log('Error with alpaca stream')
+})
 
 alpacaStream.socket.onDisconnect(() =>
 {
     console.log("Disconnected From Alpaca Data Stream");
     connectionEstablished = false
-    setTimeout(() => { alpacaStream.socket.connect() }, 5000);
+    timeOutAttemptToReconnect = setTimeout(() => { alpacaStream.socket.connect() }, 8000);
 })
 
 
@@ -159,12 +168,18 @@ async function startConnectionToRabbitMQ(tickerDataStream)
             if (msg)
             {
                 const content = JSON.parse(msg.content.toString())
-                try { initiateSingleTickerQuoteStream(content, tickerDataStream) }
-                catch (error) { console.error(`Error occurred trying to initiate a quote stream for ${content.data.tickerSymbol} via liveQuotesSubscribe`) }
+                try { initiateRemoveSingleTickerQuoteStream(content, tickerDataStream) }
+                catch (error)
+                {
+                    console.error(`Error occurred trying to initiate a quote stream for ${content.data.tickerSymbol} via liveQuotesSubscribe`)
+                    console.log(error)
+                }
                 try { initiateSingleTickerStream(content, tickerDataStream) }
-                catch (error) { console.error(`Error occurred trying to add ${content.data.tickerSymbol} to Temp Ticker stream via liveQuotesSubscribe`) }
-
-
+                catch (error)
+                {
+                    console.error(`Error occurred trying to add ${content.data.tickerSymbol} to Temp Ticker stream via liveQuotesSubscribe`)
+                    console.log(error)
+                }
                 rabbitChannel.ack(msg)
             }
         })
@@ -438,21 +453,33 @@ async function removeSingleTickerStream(content, tickerDataStream)
 
 
 //add quote and trade stream associated with the userId
-async function initiateSingleTickerQuoteStream(content, tickerDataStream)
+async function initiateRemoveSingleTickerQuoteStream(content, tickerDataStream)
 {
-    const { tickerSymbol, userId } = content.data
-    console.log(tickerSymbol)
-    if (!tickerSymbol || !userId) return console.log('Missing fields upon single ticker stream initiate')
+    const { tickerSymbol, userId, isAddingQuote } = content.data
+    if (!tickerSymbol || !userId) return console.log('Missing fields upon single ticker quote stream initiate.')
 
-    if (tickerSymbol in tempTickerQuotesPerUser)
+    if (isAddingQuote)
     {
-        if (!tempTickerQuotesPerUser[tickerSymbol].includes(userId)) { tempTickerQuotesPerUser[tickerSymbol].push(userId) }
+
+        if (tickerSymbol in tempTickerQuotesPerUser)
+        {
+            if (!tempTickerQuotesPerUser[tickerSymbol].includes(userId)) { tempTickerQuotesPerUser[tickerSymbol].push(userId) }
+        } else
+        {
+            tempTickerQuotesPerUser[tickerSymbol] = [userId]
+            tickerDataStream.addTickerToAlpacaQuoteStream([tickerSymbol])
+        }
     } else
     {
-        tempTickerQuotesPerUser[tickerSymbol] = [userId]
-        tickerDataStream.addTickerToAlpacaQuoteStream([tickerSymbol])
+        if (tickerSymbol in tempTickerQuotesPerUser)
+        {
+            tempTickerQuotesPerUser[tickerSymbol] = tempTickerQuotesPerUser[tickerSymbol].filter((t) => t !== userId)
+            if (tempTickerQuotesPerUser[tickerSymbol].length === 0) delete tempTickerQuotesPerUser[tickerSymbol]
+        }
+        tickerDataStream.removeTickerFromAlpacaQuoteStream([tickerSymbol])
     }
 }
+
 
 
 
@@ -631,10 +658,6 @@ async function checkIfUserIsLoggedInForTradeStream(trade)
 
 }
 
-// async function checkIfTradeIsStreamingQuotes(trade) {
-//     if()   
-// }
-
 
 
 
@@ -646,21 +669,11 @@ async function relayTradeToAnyTempUserTicker(trade)
         {
             socketToFront.emit('tradeStream', { users: tempTickersPerUser[trade.Symbol], trade })
         }
+
     } catch (error)
     {
         console.log(error)
     }
-
-    // try
-    // {
-    //     if (socketConnection && trade.Symbol in tempTickerQuotesPerUser && tempTickerQuotesPerUser[trade.Symbol].length > 0)
-    //     {
-    //         socketToFront.emit('tradeQuoteStream', { users: tempTickerQuotesPerUser[trade.Symbol], trade })
-    //     }
-    // } catch (error)
-    // {
-    //     console.log(error)
-    // }
 }
 
 

@@ -14,8 +14,16 @@ class DataStream
             console.log("Connected To Alpaca Data Stream");
             this.socket.session.subscriptions.quotes = []
         });
-        this.socket.onError((err) => { console.log(err); });
-        this.socket.onStateChange((state) => { console.log(state); });
+        this.socket.onError((err) =>
+        {
+            console.log(`Error occurred With Stock Stream`)
+            // console.log(err);
+        });
+        this.socket.onStateChange((state) =>
+        {
+            // console.log(this.socket?.ws.readyState)
+            console.log(`State Change: ${state}`);
+        });
 
         this.socket.connect();
     }
@@ -56,6 +64,17 @@ class DataStream
         }
     }
 
+    removeTickerFromAlpacaQuoteStream(tickerToRemove)
+    {
+        try
+        {
+            this.socket.unsubscribeFromQuotes(tickerToRemove)
+            console.log(`${tickerToRemove.toString()} removed from alpaca quote data stream`)
+        } catch (error)
+        {
+            console.log(`Error removing ${tickerToRemove.toString()} from Alpaca Quote Data Stream.`, error)
+        }
+    }
 
     addTickerToAlpacaMinuteDataStream(tickerToAdd)
     {
