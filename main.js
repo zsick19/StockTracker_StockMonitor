@@ -6,6 +6,7 @@ const mongoose = require('mongoose')
 const { io } = require('socket.io-client')
 const TickerWatch = require('./models/TickerWatch')
 const MacroTickerWatch = require('./models/MacroTickerWatch')
+const { default: BackendTradeBuffer } = require('./TradeBatchQueue')
 
 
 
@@ -14,6 +15,7 @@ const MacroTickerWatch = require('./models/MacroTickerWatch')
 const usersLoggedIn = []
 const tempTickersPerUser = {} //{tickerSymbol:[userId1,userId2],tickerSymbol:[userId3,userId2]}
 const tempTickerQuotesPerUser = {}
+let tempTickersForNewsStream = []
 let macroTickersDefaultToEveryUser = []
 // ['SPY', 'DIA', 'QQQ', 'IWM', 'TLT', 'XLRE', 'XLY', 'XLK', 'XLF', 'XLU', 'XLP', 'XLE',
 //     'XLC', 'XLI', 'XLV', 'XLB', 'GLD', 'SLV', 'GDX', 'SMH', 'XBI', 'KRE', 'XOP', 'XRT']
@@ -31,8 +33,8 @@ const rabbitQueueNames = {
     enterExitTradeQueue: 'enterExitTradeQueue',
     loggedInWatchListQueue: 'loggedInWatchListQueue',
     updateEMAlertQueue: 'updateEMAlert',
-    liveQuotesSubscribe: 'liveQuotesSubscribe'
-
+    liveQuotesSubscribe: 'liveQuotesSubscribe',
+    newsAlertStartStream: 'newsAlertStartStream'
 }
 
 let rabbitConnection = undefined
@@ -146,6 +148,7 @@ async function startConnectionToRabbitMQ(tickerDataStream)
         await rabbitChannel.assertQueue(rabbitQueueNames.loggedInWatchListQueue, { durable: true })
         await rabbitChannel.assertQueue(rabbitQueueNames.updateEMAlertQueue, { durable: true })
         await rabbitChannel.assertQueue(rabbitQueueNames.liveQuotesSubscribe, { durable: true })
+        await rabbitChannel.assertQueue(rabbitQueueNames.newsAlertStartStream, { durable: true })
         rabbitChannel.prefetch(1)
         console.log('Consumer connected to RabbitMQ. Waiting for message')
 
@@ -158,6 +161,28 @@ async function startConnectionToRabbitMQ(tickerDataStream)
                 const content = JSON.parse(msg.content.toString());
                 if (content.data.refreshDBTickersForStream) { fetchInitialTickers() }
                 if (!usersLoggedIn.includes(content.data.userId)) { usersLoggedIn.push(content.data.userId) }
+                rabbitChannel.ack(msg);
+            }
+        })
+        rabbitChannel.consume(rabbitQueueNames.newsAlertStartStream, (msg) =>
+        {
+            if (msg)
+            {
+                const content = JSON.parse(msg.content.toString());
+                console.log(content.data)
+                let ticker = content.data.ticker
+                if (!tempTickersForNewsStream.includes(ticker)) tempTickersForNewsStream.push(ticker)
+                try
+                {
+                    tickerDataStream.addTickerToAlpacaQuoteStream([ticker])
+                    tickerDataStream.addTickerToAlpacaDataStream([ticker])
+                }
+                catch (error)
+                {
+                    console.error(`Error occurred trying to initiate a quote stream for ${content.data.tickerSymbol} via liveQuotesSubscribe`)
+                    console.log(error)
+                }
+
                 rabbitChannel.ack(msg);
             }
         })
@@ -476,6 +501,12 @@ async function initiateRemoveSingleTickerQuoteStream(content, tickerDataStream)
             tempTickerQuotesPerUser[tickerSymbol] = tempTickerQuotesPerUser[tickerSymbol].filter((t) => t !== userId)
             if (tempTickerQuotesPerUser[tickerSymbol].length === 0) delete tempTickerQuotesPerUser[tickerSymbol]
         }
+        if (tempTickersForNewsStream.includes(tickerSymbol))
+        {
+            tempTickersForNewsStream = tempTickersForNewsStream.filter((t) => t !== tickerSymbol)
+            tickerDataStream.removeTickerFromAlpacaDataStream([tickerSymbol])
+        }
+
         tickerDataStream.removeTickerFromAlpacaQuoteStream([tickerSymbol])
     }
 }
@@ -494,11 +525,10 @@ async function initiateRemoveSingleTickerQuoteStream(content, tickerDataStream)
 //////////////////////////////////////////////////////////////////////////////////////
 /////           response to incoming alpaca onTrade data stream events            ////
 //////////////////////////////////////////////////////////////////////////////////////
+const tradeBuffer = new BackendTradeBuffer(processTrade, 250)
 alpacaStream.socket.onStockTrade((trade) =>
 {
-    checkIfDefaultMacroTrade(trade)
-    checkIfUserIsLoggedInForTradeStream(trade)
-    relayTradeToAnyTempUserTicker(trade)
+    tradeBuffer.addTick(trade)
 })
 
 alpacaStream.socket.onStockQuote((quote) =>
@@ -509,12 +539,32 @@ alpacaStream.socket.onStockQuote((quote) =>
         {
             socketToFront.emit('quoteStream', { users: tempTickerQuotesPerUser[quote.Symbol], quote })
         }
+
+        if (tempTickersForNewsStream.includes(quote.Symbol) && socketConnection)
+        {
+            socketToFront.emit('newAlertQuoteStream', { users: usersLoggedIn, quote })
+        }
     } catch (error)
     {
         console.log(error)
     }
 })
 
+function processTrade(trade)
+{
+    checkIfTickerIsNewsAlert(trade)
+    checkIfDefaultMacroTrade(trade)
+    checkIfUserIsLoggedInForTradeStream(trade)
+    relayTradeToAnyTempUserTicker(trade)
+}
+
+async function checkIfTickerIsNewsAlert(trade)
+{
+    if (tempTickersForNewsStream.includes(trade.Symbol) && socketConnection)
+    {
+        socketToFront.emit('newsAlertPriceChange', { users: usersLoggedIn, trade })
+    }
+}
 
 async function checkIfDefaultMacroTrade(trade)
 {
